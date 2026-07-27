@@ -6,6 +6,10 @@ Const BROWSE_OPTIONS = &H10&
 Const WD_DO_NOT_SAVE_CHANGES = 0
 Const WD_ALERTS_NONE = 0
 Const WD_EXPORT_FORMAT_PDF = 17
+Const WD_EXPORT_OPTIMIZE_FOR_PRINT = 0
+Const WD_EXPORT_ALL_DOCUMENT = 0
+Const WD_EXPORT_DOCUMENT_CONTENT = 0
+Const WD_EXPORT_CREATE_HEADING_BOOKMARKS = 1
 Const MSO_AUTOMATION_SECURITY_FORCE_DISABLE = 3
 
 ' Change to True to replace existing PDFs.
@@ -18,23 +22,18 @@ Const INCLUDE_SUBFOLDERS = False
 ' Set to 0 to disable periodic restarts.
 Const WORD_RESTART_INTERVAL = 250
 
-' Number of times to retry a document after restarting Microsoft Word.
+' Number of times to attempt each document conversion.
 Const MAX_CONVERSION_ATTEMPTS = 2
 
 ' Minimum acceptable generated PDF size, in bytes.
 Const MINIMUM_PDF_SIZE = 100
 
-' Name of the log file created in the selected folder.
-Const LOG_FILE_NAME = "Converted Documents.log"
-
 Dim shell
 Dim selectedFolder
 Dim fileSystem
 Dim wordApplication
-Dim logFile
 
 Dim folderPath
-Dim logPath
 
 Dim convertedCount
 Dim skippedCount
@@ -53,7 +52,6 @@ Set shell = Nothing
 Set selectedFolder = Nothing
 Set fileSystem = Nothing
 Set wordApplication = Nothing
-Set logFile = Nothing
 
 If Not CreateFileSystem() Then
     WScript.Quit 1
@@ -71,14 +69,6 @@ If Not fileSystem.FolderExists(folderPath) Then
     WScript.Quit 1
 End If
 
-OpenLogFile folderPath
-
-WriteLog String(72, "=")
-WriteLog "Document-to-PDF conversion started."
-WriteLog "Folder: " & folderPath
-WriteLog "Overwrite existing PDFs: " & CStr(OVERWRITE_EXISTING)
-WriteLog "Include subfolders: " & CStr(INCLUDE_SUBFOLDERS)
-
 If Not StartWordApplication() Then
     exitCode = 1
     CleanUp
@@ -86,11 +76,6 @@ If Not StartWordApplication() Then
 End If
 
 ProcessFolder folderPath
-
-WriteLog "Conversion finished."
-WriteLog "Converted: " & convertedCount
-WriteLog "Skipped: " & skippedCount
-WriteLog "Failed: " & failedCount
 
 If failedCount > 0 Then
     exitCode = 1
@@ -100,7 +85,6 @@ End If
 
 CleanUp
 WScript.Quit exitCode
-
 
 Function CreateFileSystem()
     Dim errorNumber
@@ -122,7 +106,6 @@ Function CreateFileSystem()
 
     CreateFileSystem = True
 End Function
-
 
 Function GetInputFolder()
     Dim arguments
@@ -177,30 +160,6 @@ Function GetInputFolder()
     On Error GoTo 0
 End Function
 
-
-Sub OpenLogFile(inputFolderPath)
-    Dim errorNumber
-
-    logPath = fileSystem.BuildPath(inputFolderPath, LOG_FILE_NAME)
-
-    On Error Resume Next
-    Set logFile = fileSystem.OpenTextFile( _
-        logPath, _
-        8, _
-        True, _
-        -1 _
-    )
-    errorNumber = Err.Number
-    Err.Clear
-    On Error GoTo 0
-
-    If errorNumber <> 0 Then
-        ' Conversion can continue even if the log file cannot be created.
-        Set logFile = Nothing
-    End If
-End Sub
-
-
 Function StartWordApplication()
     Dim errorNumber
     Dim errorDescription
@@ -217,10 +176,6 @@ Function StartWordApplication()
     On Error GoTo 0
 
     If errorNumber <> 0 Or wordApplication Is Nothing Then
-        WriteLogError _
-            "Microsoft Word could not be started.", _
-            errorNumber, _
-            errorDescription
 
         Set wordApplication = Nothing
         Exit Function
@@ -240,10 +195,6 @@ Function StartWordApplication()
     On Error GoTo 0
 
     If errorNumber <> 0 Then
-        WriteLogError _
-            "Microsoft Word could not be configured for automation.", _
-            errorNumber, _
-            errorDescription
 
         StopWordApplication
         Exit Function
@@ -252,7 +203,6 @@ Function StartWordApplication()
     attemptedSinceRestart = 0
     StartWordApplication = True
 End Function
-
 
 Sub StopWordApplication()
     If wordApplication Is Nothing Then
@@ -266,14 +216,11 @@ Sub StopWordApplication()
     On Error GoTo 0
 End Sub
 
-
 Function RestartWordApplication()
-    WriteLog "Restarting Microsoft Word automation."
 
     StopWordApplication
     RestartWordApplication = StartWordApplication()
 End Function
-
 
 Sub ProcessFolder(currentFolderPath)
     Dim currentFolder
@@ -292,10 +239,6 @@ Sub ProcessFolder(currentFolderPath)
     On Error GoTo 0
 
     If errorNumber <> 0 Or currentFolder Is Nothing Then
-        WriteLogError _
-            "Could not access folder: " & currentFolderPath, _
-            errorNumber, _
-            errorDescription
 
         failedCount = failedCount + 1
         Exit Sub
@@ -308,11 +251,6 @@ Sub ProcessFolder(currentFolderPath)
             errorNumber = Err.Number
             errorDescription = Err.Description
             Err.Clear
-
-            WriteLogError _
-                "Could not enumerate files in folder: " & currentFolderPath, _
-                errorNumber, _
-                errorDescription
 
             failedCount = failedCount + 1
             Exit For
@@ -335,11 +273,6 @@ Sub ProcessFolder(currentFolderPath)
                 errorDescription = Err.Description
                 Err.Clear
 
-                WriteLogError _
-                    "Could not enumerate subfolders in: " & currentFolderPath, _
-                    errorNumber, _
-                    errorDescription
-
                 failedCount = failedCount + 1
                 Exit For
             End If
@@ -355,7 +288,6 @@ Sub ProcessFolder(currentFolderPath)
     Set currentFile = Nothing
     Set currentFolder = Nothing
 End Sub
-
 
 Function IsSupportedDocument(documentFile)
     Dim extension
@@ -375,52 +307,56 @@ Function IsSupportedDocument(documentFile)
     End Select
 End Function
 
-
 Sub ConvertDocumentToPdf(inputPath)
     Dim attemptNumber
-    Dim conversionSucceeded
+    Dim resultCode
 
-    conversionSucceeded = False
+    resultCode = 0
 
     For attemptNumber = 1 To MAX_CONVERSION_ATTEMPTS
         If wordApplication Is Nothing Then
             If Not StartWordApplication() Then
-                failedCount = failedCount + 1
-                Exit Sub
+                resultCode = -1
+                Exit For
             End If
         End If
 
-        conversionSucceeded = TryConvertDocumentToPdf(inputPath)
+        resultCode = TryConvertDocumentToPdf(inputPath)
 
-        If conversionSucceeded Then
+        ' 1 = converted, 2 = skipped, -1 = failed.
+        If resultCode = 1 Or resultCode = 2 Then
             Exit For
         End If
 
         If attemptNumber < MAX_CONVERSION_ATTEMPTS Then
-            WriteLog _
-                "Retrying after Word restart: " & inputPath
 
             If Not RestartWordApplication() Then
+                resultCode = -1
                 Exit For
             End If
         End If
     Next
 
-    If Not conversionSucceeded Then
-        failedCount = failedCount + 1
-    End If
+    Select Case resultCode
+        Case 1
+            convertedCount = convertedCount + 1
+
+        Case 2
+            skippedCount = skippedCount + 1
+
+        Case Else
+            failedCount = failedCount + 1
+    End Select
 
     attemptedSinceRestart = attemptedSinceRestart + 1
 
     If WORD_RESTART_INTERVAL > 0 Then
         If attemptedSinceRestart >= WORD_RESTART_INTERVAL Then
             If Not RestartWordApplication() Then
-                WriteLog "ERROR: Microsoft Word could not be restarted."
             End If
         End If
     End If
 End Sub
-
 
 Function TryConvertDocumentToPdf(inputPath)
     Dim document
@@ -432,7 +368,11 @@ Function TryConvertDocumentToPdf(inputPath)
     Dim errorDescription
     Dim outputFile
 
-    TryConvertDocumentToPdf = False
+    ' Return values:
+    '  1 = converted
+    '  2 = skipped
+    ' -1 = failed
+    TryConvertDocumentToPdf = -1
 
     Set document = Nothing
     Set outputFile = Nothing
@@ -451,9 +391,7 @@ Function TryConvertDocumentToPdf(inputPath)
                 Exit Function
             End If
         Else
-            skippedCount = skippedCount + 1
-            WriteLog "Skipped; PDF already exists: " & outputPath
-            TryConvertDocumentToPdf = True
+            TryConvertDocumentToPdf = 2
             Exit Function
         End If
     End If
@@ -481,10 +419,6 @@ Function TryConvertDocumentToPdf(inputPath)
     On Error GoTo 0
 
     If errorNumber <> 0 Or document Is Nothing Then
-        WriteLogError _
-            "Could not open document: " & inputPath, _
-            errorNumber, _
-            errorDescription
 
         CloseDocument document
         Exit Function
@@ -494,7 +428,19 @@ Function TryConvertDocumentToPdf(inputPath)
 
     document.ExportAsFixedFormat _
         temporaryOutputPath, _
-        WD_EXPORT_FORMAT_PDF
+        WD_EXPORT_FORMAT_PDF, _
+        False, _
+        WD_EXPORT_OPTIMIZE_FOR_PRINT, _
+        WD_EXPORT_ALL_DOCUMENT, _
+        1, _
+        1, _
+        WD_EXPORT_DOCUMENT_CONTENT, _
+        True, _
+        True, _
+        WD_EXPORT_CREATE_HEADING_BOOKMARKS, _
+        True, _
+        True, _
+        False
 
     errorNumber = Err.Number
     errorDescription = Err.Description
@@ -506,18 +452,10 @@ Function TryConvertDocumentToPdf(inputPath)
     If errorNumber <> 0 Then
         DeletePartialPdf temporaryOutputPath
 
-        WriteLogError _
-            "Could not create PDF from: " & inputPath, _
-            errorNumber, _
-            errorDescription
-
         Exit Function
     End If
 
     If Not fileSystem.FileExists(temporaryOutputPath) Then
-        WriteLog _
-            "Failed; export completed but the PDF was not found: " & _
-            temporaryOutputPath
 
         Exit Function
     End If
@@ -530,18 +468,12 @@ Function TryConvertDocumentToPdf(inputPath)
     On Error GoTo 0
 
     If errorNumber <> 0 Or outputFile Is Nothing Then
-        WriteLogError _
-            "Could not inspect the generated PDF: " & temporaryOutputPath, _
-            errorNumber, _
-            errorDescription
 
         DeletePartialPdf temporaryOutputPath
         Exit Function
     End If
 
     If outputFile.Size < MINIMUM_PDF_SIZE Then
-        WriteLog _
-            "Failed; generated PDF is too small: " & temporaryOutputPath
 
         Set outputFile = Nothing
         DeletePartialPdf temporaryOutputPath
@@ -558,24 +490,13 @@ Function TryConvertDocumentToPdf(inputPath)
     On Error GoTo 0
 
     If errorNumber <> 0 Then
-        WriteLogError _
-            "Could not finalize generated PDF: " & outputPath, _
-            errorNumber, _
-            errorDescription
 
         DeletePartialPdf temporaryOutputPath
         Exit Function
     End If
 
-    convertedCount = convertedCount + 1
-
-    WriteLog _
-        "Converted: " & inputPath & _
-        " -> " & outputPath
-
-    TryConvertDocumentToPdf = True
+    TryConvertDocumentToPdf = 1
 End Function
-
 
 Function DeleteFileSafely(filePath)
     Dim errorNumber
@@ -595,15 +516,10 @@ Function DeleteFileSafely(filePath)
     On Error GoTo 0
 
     If errorNumber <> 0 Then
-        WriteLogError _
-            "Could not delete file: " & filePath, _
-            errorNumber, _
-            errorDescription
 
         DeleteFileSafely = False
     End If
 End Function
-
 
 Sub CloseDocument(ByRef document)
     If document Is Nothing Then
@@ -616,7 +532,6 @@ Sub CloseDocument(ByRef document)
     Set document = Nothing
     On Error GoTo 0
 End Sub
-
 
 Sub DeletePartialPdf(pdfPath)
     Dim errorNumber
@@ -634,60 +549,11 @@ Sub DeletePartialPdf(pdfPath)
     On Error GoTo 0
 
     If errorNumber <> 0 Then
-        WriteLogError _
-            "Could not delete incomplete PDF: " & pdfPath, _
-            errorNumber, _
-            errorDescription
     End If
 End Sub
-
-
-Sub WriteLog(message)
-    If logFile Is Nothing Then
-        Exit Sub
-    End If
-
-    On Error Resume Next
-
-    logFile.WriteLine _
-        FormatLogTimestamp(Now) & _
-        "  " & _
-        message
-
-    Err.Clear
-    On Error GoTo 0
-End Sub
-
-
-Sub WriteLogError(message, errorNumber, errorDescription)
-    WriteLog _
-        "ERROR: " & message & _
-        " | Error " & CStr(errorNumber) & _
-        ": " & errorDescription
-End Sub
-
-
-Function FormatLogTimestamp(timestamp)
-    FormatLogTimestamp = _
-        Year(timestamp) & "-" & _
-        Right("0" & Month(timestamp), 2) & "-" & _
-        Right("0" & Day(timestamp), 2) & " " & _
-        Right("0" & Hour(timestamp), 2) & ":" & _
-        Right("0" & Minute(timestamp), 2) & ":" & _
-        Right("0" & Second(timestamp), 2)
-End Function
-
 
 Sub CleanUp()
     StopWordApplication
-
-    If Not logFile Is Nothing Then
-        On Error Resume Next
-        logFile.Close
-        Err.Clear
-        Set logFile = Nothing
-        On Error GoTo 0
-    End If
 
     Set selectedFolder = Nothing
     Set shell = Nothing
