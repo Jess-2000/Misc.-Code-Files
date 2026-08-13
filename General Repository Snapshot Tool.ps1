@@ -1,4 +1,5 @@
 ﻿#requires -Version 5.1
+
 param(
     [switch]$GuiMode
 )
@@ -88,24 +89,31 @@ function Save-ProjectSettings {
 }
 
 function Get-ProjectProfile {
-    param([Parameter(Mandatory)][string]$Name)
+    param([AllowEmptyString()][string]$ProjectName = '')
 
-    return @($script:ProjectSettings.Projects) | Where-Object { $_.Name -eq $Name } | Select-Object -First 1
+    $trimmedName = $ProjectName.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedName)) {
+        return $null
+    }
+
+    return @($script:ProjectSettings.Projects) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_.Name) -and $_.Name -eq $trimmedName } |
+        Select-Object -First 1
 }
 
 function Set-ProjectProfile {
     param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$OutputFile
+        [AllowEmptyString()][string]$ProjectName = '',
+        [AllowEmptyString()][string]$Source = '',
+        [AllowEmptyString()][string]$OutputFile = ''
     )
 
-    $trimmedName = $Name.Trim()
+    $trimmedName = $ProjectName.Trim()
     if ([string]::IsNullOrWhiteSpace($trimmedName)) {
         throw 'Enter a project name before saving defaults.'
     }
 
-    $existing = Get-ProjectProfile -Name $trimmedName
+    $existing = Get-ProjectProfile -ProjectName $trimmedName
     if ($null -ne $existing) {
         $existing.Source = $Source.Trim()
         $existing.OutputFile = $OutputFile.Trim()
@@ -125,11 +133,15 @@ function Set-ProjectProfile {
 $script:ProjectSettings = Load-ProjectSettings
 
 function Show-Error {
-    param([Parameter(Mandatory)][string]$Message)
+    param([AllowEmptyString()][string]$Message = '')
+
+    if ([string]::IsNullOrWhiteSpace($Message)) {
+        $Message = 'An unexpected error occurred.'
+    }
 
     [System.Windows.Forms.MessageBox]::Show(
         $Message,
-        'Snapshot Tool',
+        'Snapshot Tool 1.1',
         [System.Windows.Forms.MessageBoxButtons]::OK,
         [System.Windows.Forms.MessageBoxIcon]::Error
     ) | Out-Null
@@ -148,7 +160,7 @@ function Write-Status {
 }
 
 function Get-NormalizedArchivePath {
-    param([Parameter(Mandatory)][string]$OutputFile)
+    param([AllowEmptyString()][string]$OutputFile = '')
 
     $trimmedOutputFile = $OutputFile.Trim()
 
@@ -172,12 +184,17 @@ function Get-NormalizedArchivePath {
 
 function New-ProjectSnapshot {
     param(
-        [Parameter(Mandatory)][string]$Source,
-        [Parameter(Mandatory)][string]$OutputFile,
+        [AllowEmptyString()][string]$Source = '',
+        [AllowEmptyString()][string]$OutputFile = '',
         [Parameter(Mandatory)][System.Windows.Forms.TextBox]$LogTextBox
     )
 
-    $resolvedSource = [System.IO.Path]::GetFullPath($Source.Trim())
+    $trimmedSource = $Source.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedSource)) {
+        throw 'Choose a source folder.'
+    }
+
+    $resolvedSource = [System.IO.Path]::GetFullPath($trimmedSource)
     $archive = Get-NormalizedArchivePath -OutputFile $OutputFile
     $resolvedOutput = [System.IO.Path]::GetDirectoryName($archive)
     $archiveBaseName = [System.IO.Path]::GetFileNameWithoutExtension($archive)
@@ -281,7 +298,7 @@ function New-ProjectSnapshot {
 }
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = 'Project Snapshot Tool'
+$form.Text = 'Project Snapshot Tool 1.1'
 $form.StartPosition = 'CenterScreen'
 $form.ClientSize = New-Object System.Drawing.Size(720, 555)
 $form.MinimumSize = New-Object System.Drawing.Size(736, 594)
@@ -400,7 +417,10 @@ function Refresh-ProjectList {
 
     $projectComboBox.Items.Clear()
     foreach ($project in @($script:ProjectSettings.Projects) | Sort-Object Name) {
-        [void]$projectComboBox.Items.Add($project.Name)
+        $savedName = [string]$project.Name
+        if (-not [string]::IsNullOrWhiteSpace($savedName)) {
+            [void]$projectComboBox.Items.Add($savedName)
+        }
     }
 
     if (-not [string]::IsNullOrWhiteSpace($SelectedProject)) {
@@ -414,7 +434,7 @@ function Load-SelectedProject {
         return
     }
 
-    $profile = Get-ProjectProfile -Name $name
+    $profile = Get-ProjectProfile -ProjectName $name
     if ($null -eq $profile) {
         return
     }
@@ -437,7 +457,7 @@ $projectComboBox.Add_SelectionChangeCommitted({
 $saveDefaultsButton.Add_Click({
     try {
         Set-ProjectProfile `
-            -Name $projectComboBox.Text `
+            -ProjectName $projectComboBox.Text `
             -Source $sourceTextBox.Text `
             -OutputFile $outputTextBox.Text
 
@@ -451,7 +471,12 @@ $saveDefaultsButton.Add_Click({
 
 $deleteDefaultsButton.Add_Click({
     $name = $projectComboBox.Text.Trim()
-    $profile = Get-ProjectProfile -Name $name
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        Show-Error -Message 'Select a saved project before deleting defaults.'
+        return
+    }
+
+    $profile = Get-ProjectProfile -ProjectName $name
 
     if ($null -eq $profile) {
         Show-Error -Message 'Select a saved project before deleting defaults.'
@@ -460,7 +485,7 @@ $deleteDefaultsButton.Add_Click({
 
     $answer = [System.Windows.Forms.MessageBox]::Show(
         "Delete the saved defaults for '$name'?",
-        'Snapshot Tool',
+        'Snapshot Tool 1.1',
         [System.Windows.Forms.MessageBoxButtons]::YesNo,
         [System.Windows.Forms.MessageBoxIcon]::Question
     )
@@ -554,7 +579,7 @@ $createButton.Add_Click({
 
         $result = [System.Windows.Forms.MessageBox]::Show(
             "Snapshot created successfully.`r`n`r`n$($archiveItem.FullName)`r`n`r`nOpen the containing folder?",
-            'Snapshot Tool',
+            'Snapshot Tool 1.1',
             [System.Windows.Forms.MessageBoxButtons]::YesNo,
             [System.Windows.Forms.MessageBoxIcon]::Information
         )
