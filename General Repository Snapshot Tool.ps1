@@ -7,14 +7,6 @@ param(
 <#
 .SYNOPSIS
     Creates a clean ZIP snapshot of a local project folder using a GUI only.
-
-.DESCRIPTION
-    This single file replaces both the former CMD launcher and the PowerShell
-    script. When started normally, it relaunches itself in a hidden PowerShell
-    window so only the Windows Forms UI is visible.
-
-    Robocopy output and other operational messages are written into the Status
-    box in the UI instead of being shown in a console window.
 #>
 
 # Relaunch in a hidden PowerShell host. This replaces the old .cmd launcher.
